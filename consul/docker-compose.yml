@@ -1,0 +1,172 @@
+﻿name: consul
+services:
+  consul-server:
+    image: hashicorp/consul:1.21
+    command:
+      - agent
+      - -server
+      - -bootstrap-expect=1
+      - -ui
+      - -client=0.0.0.0
+      - -bind=0.0.0.0
+      - -grpc-port=8502
+      - -config-dir=/consul/config
+      - -config-dir=/consul/config/services
+    ports:
+      - "8500:8500"
+      - "8502:8502"
+    volumes:
+      - ./consul:/consul/config
+    networks:
+      - demo-net
+
+  consul-intentions:
+    image: hashicorp/consul:1.21
+    depends_on:
+      - consul-server
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-server:8500
+    command:
+      - sh
+      - -c
+      - |
+        until consul members >/dev/null 2>&1; do sleep 1; done
+        consul intention create -replace api-gateway product-service
+        consul intention create -replace api-gateway order-service
+        consul intention create -replace order-service product-service
+    networks:
+      - demo-net
+
+  postgres-products:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: products
+      POSTGRES_USER: products
+      POSTGRES_PASSWORD: products
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U products -d products"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - demo-net
+
+  postgres-orders:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - demo-net
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    environment:
+      CONSUL_HOST: consul-server
+      PRODUCT_SERVICE_URL: http://127.0.0.1:19001
+      ORDER_SERVICE_URL: http://127.0.0.1:19002
+    ports:
+      - "8080:8080"
+    depends_on:
+      - consul-server
+      - product-service
+      - order-service
+    networks:
+      demo-net:
+        ipv4_address: 172.30.0.20
+
+  product-service:
+    build:
+      context: .
+      dockerfile: product-service/Dockerfile
+    environment:
+      CONSUL_HOST: consul-server
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-products:5432/products
+      SPRING_DATASOURCE_USERNAME: products
+      SPRING_DATASOURCE_PASSWORD: products
+    depends_on:
+      postgres-products:
+        condition: service_healthy
+      consul-server:
+        condition: service_started
+    networks:
+      demo-net:
+        ipv4_address: 172.30.0.21
+
+  order-service:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    environment:
+      CONSUL_HOST: consul-server
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-orders:5432/orders
+      SPRING_DATASOURCE_USERNAME: orders
+      SPRING_DATASOURCE_PASSWORD: orders
+      PRODUCT_SERVICE_URL: http://127.0.0.1:19001
+    depends_on:
+      postgres-orders:
+        condition: service_healthy
+      consul-server:
+        condition: service_started
+      product-service:
+        condition: service_started
+    networks:
+      demo-net:
+        ipv4_address: 172.30.0.22
+
+  api-gateway-sidecar:
+    build:
+      context: .
+      dockerfile: consul-envoy/Dockerfile
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-server:8500
+    command: ["consul", "connect", "envoy", "-sidecar-for", "api-gateway", "-grpc-addr=consul-server:8502"]
+    depends_on:
+      - consul-server
+      - api-gateway
+    network_mode: "service:api-gateway"
+
+  product-service-sidecar:
+    build:
+      context: .
+      dockerfile: consul-envoy/Dockerfile
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-server:8500
+    command: ["consul", "connect", "envoy", "-sidecar-for", "product-service", "-grpc-addr=consul-server:8502"]
+    depends_on:
+      - consul-server
+      - product-service
+    network_mode: "service:product-service"
+
+  order-service-sidecar:
+    build:
+      context: .
+      dockerfile: consul-envoy/Dockerfile
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-server:8500
+    command: ["consul", "connect", "envoy", "-sidecar-for", "order-service", "-grpc-addr=consul-server:8502"]
+    depends_on:
+      - consul-server
+      - order-service
+    network_mode: "service:order-service"
+
+networks:
+  demo-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+
