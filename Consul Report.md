@@ -14,7 +14,7 @@ Text: Báo cáo consul
 - Consul UI:
 - Giao diện để xem service nào đã đăng ký, health check, sidecar proxy, intentions.
 - UI được tích hợp sẵn trong Consul Server và được bật trong docker-compose.
-- Consul Service Discovery
+- Consul Service Discovery:
 - Các service được đăng ký vào Consul qua file:
      consul/services/api-gateway.hcl
      consul/services/product-service.hcl
